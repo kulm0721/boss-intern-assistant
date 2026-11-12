@@ -1,0 +1,199 @@
+<script lang="ts" setup>
+import { computed, onMounted, ref } from 'vue'
+
+import Alert from '@/components/Alert.vue'
+import { useConf } from '@/composables/conf'
+import { useHelper } from '@/composables/useHelper'
+import { useJobActions } from '@/composables/useJobActions'
+
+const helper = useHelper()
+const actions = useJobActions()
+const running = computed(() => helper.workflow?.status.value === 'running')
+const startDisabled = computed(() => running.value || helper.jobActionBusy.value)
+const deliveryMode = computed(() => {
+  const mode = helper.workflow?.lastMode.value
+  return mode === 'filter' || mode === 'generate' || mode === 'delivery' ? 'delivery' : 'auto'
+})
+const deliveryLabel = computed(() =>
+  helper.workflow?.status.value === 'stop' &&
+  (helper.workflow?.lastMode.value === 'auto' || helper.workflow?.lastMode.value === 'delivery')
+    ? '继续投递'
+    : '开始投递',
+)
+const filterLabel = computed(() =>
+  helper.workflow?.status.value === 'stop' && helper.workflow?.lastMode.value === 'filter'
+    ? '继续仅筛选'
+    : '开始仅筛选',
+)
+const generateLabel = computed(() =>
+  helper.workflow?.status.value === 'stop' && helper.workflow?.lastMode.value === 'generate'
+    ? '继续仅生成'
+    : '开始仅生成',
+)
+
+const { todayData, statisticsData } = helper.statistics
+
+// const { next, page } = usePager()
+const conf = useConf()
+const statisticCycle = ref(1)
+
+const statisticCycleData = [
+  {
+    label: '近三日投递',
+    help: '愿你每一次投递都能得到回应',
+    date: 3,
+  },
+  {
+    label: '本周投递',
+    help: '愿你早日找到心满意足的工作',
+    date: 7,
+  },
+  {
+    label: '本月投递',
+    help: '愿你在面试中得到满意的结果',
+    date: 30,
+  },
+  {
+    label: '历史投递',
+    help: '愿你能早九晚五还双休带五险',
+    date: -1,
+  },
+]
+
+const cycle = computed(() => {
+  const date = statisticCycleData[statisticCycle.value]?.date
+  let ans = 0
+  if (!date) return ans
+  for (
+    let i = 0;
+    // eslint-disable-next-line no-unmodified-loop-condition
+    (date === -1 || i < date - 1) && i < statisticsData.value.length;
+    i++
+  ) {
+    ans += statisticsData.value[i]?.success ?? 0
+  }
+  return ans
+})
+
+onMounted(() => {
+  void helper.statistics.updateStatistics()
+})
+</script>
+
+<template>
+  <div class="flex gap-2 flex-col">
+    <Alert
+      id="config-statistics"
+      description="数据并不完全准确，投递上限根据自身情况调整, 建议 120-140, boss限制最高150"
+      color="warning"
+      show-icon
+    />
+    <div v-if="conf.configLevel.intermediate" class="grid grid-cols-5 gap-4">
+      <div data-help="统计当天脚本扫描过的所有岗位">
+        <div class="text-sm text-gray-500">岗位总数：</div>
+        <div class="text-2xl font-semibold">
+          {{ todayData.total }} <span class="text-sm text-gray-400">份</span>
+        </div>
+      </div>
+      <div data-help="统计当天岗位过滤的比例,被过滤/总数">
+        <div class="text-sm text-gray-500">过滤比例：</div>
+        <div class="text-2xl font-semibold">
+          {{ (((todayData.total - todayData.success) / todayData.total) * 100).toFixed(0) }}
+          <span class="text-sm text-gray-400">%</span>
+        </div>
+      </div>
+      <div data-help="统计当天刷到了多少处理过的岗位,重复/总数">
+        <div class="text-sm text-gray-500">重复比例：</div>
+        <div class="text-2xl font-semibold">
+          {{ ((todayData.repeat / todayData.total) * 100).toFixed(0) }}
+          <span class="text-sm text-gray-400">%</span>
+        </div>
+      </div>
+      <div data-help="统计当天岗位中的活跃情况,不活跃/总数">
+        <div class="text-sm text-gray-500">活跃比例：</div>
+        <div class="text-2xl font-semibold">
+          {{ ((todayData.activityFilter / todayData.total) * 100).toFixed(0) }}
+          <span class="text-sm text-gray-400">%</span>
+        </div>
+      </div>
+      <div :data-help="statisticCycleData[statisticCycle]?.help">
+        <UDropdownMenu
+          :items="
+            statisticCycleData.map((item, index) => ({
+              label: item.label,
+              onSelect: () => (statisticCycle = index),
+            }))
+          "
+        >
+          <div class="text-sm text-gray-500 cursor-pointer flex items-center gap-1">
+            {{ statisticCycleData[statisticCycle]?.label }}:
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 1024 1024">
+              <path
+                fill="currentColor"
+                d="M831.872 340.864 512 652.672 192.128 340.864a30.592 30.592 0 0 0-42.752 0 29.12 29.12 0 0 0 0 41.6L489.664 714.24a32 32 0 0 0 44.672 0l340.288-331.712a29.12 29.12 0 0 0 0-41.728 30.592 30.592 0 0 0-42.752 0z"
+              />
+            </svg>
+          </div>
+        </UDropdownMenu>
+        <div class="text-2xl font-semibold">
+          {{ cycle + todayData.success }}
+          <span class="text-sm text-gray-400">份</span>
+        </div>
+      </div>
+    </div>
+    <div class="flex flex-row gap-2 items-center justify-center">
+      <UFieldGroup>
+        <UButton
+          color="primary"
+          :data-help="
+            deliveryMode === 'delivery' ? '仅投递现有 ready 队列中的岗位' : '筛选、生成招呼语并投递'
+          "
+          :loading="running"
+          :disabled="startDisabled"
+          @click="actions.run(deliveryLabel, () => helper.start(deliveryMode))"
+        >
+          {{ deliveryLabel }}
+        </UButton>
+        <UButton
+          color="neutral"
+          :disabled="startDisabled"
+          data-help="仅筛选岗位，不自动投递"
+          @click="actions.run(filterLabel, () => helper.start('filter'))"
+        >
+          {{ filterLabel }}
+        </UButton>
+        <UButton
+          color="neutral"
+          :disabled="startDisabled"
+          data-help="仅生成招呼语草稿，不自动投递"
+          @click="actions.run(generateLabel, () => helper.start('generate'))"
+        >
+          {{ generateLabel }}
+        </UButton>
+        <UButton
+          v-if="helper.workflow?.status.value === 'stop'"
+          color="warning"
+          data-help="重置已被筛选的岗位，开始将重新处理"
+          @click="helper.reset()"
+        >
+          重置筛选
+        </UButton>
+        <UButton
+          v-if="helper.workflow?.status.value === 'running'"
+          color="warning"
+          data-help="暂停后应该能继续"
+          @click="helper.stop()"
+        >
+          暂停
+        </UButton>
+      </UFieldGroup>
+      <UProgress
+        data-help="我会统计当天脚本投递的数量,该记录并不准确"
+        class="flex-1"
+        :model-value="(todayData.success / conf.formData.deliveryLimit.value) * 100"
+      />
+    </div>
+  </div>
+</template>
+
+<style lang="scss"></style>

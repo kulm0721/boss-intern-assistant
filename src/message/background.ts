@@ -1,0 +1,220 @@
+import type { Adapter, Message, OnMessage, SendMessage } from 'comctx'
+import { openDB } from 'idb'
+import { reserveDelivery, settleDelivery, listDeliveries } from '@/internship/history'
+
+import type { Browser } from '#imports'
+import { browser } from '#imports'
+import { createTableBoss, feishuFetch, feishuUpsert } from '@/utils/feishuBackground'
+import type { ResponseType } from '@/utils/request'
+
+export type { FeishuConfig } from '@/utils/feishuBackground'
+
+export const userKey = 'local:conf-user'
+
+const DB_NAME = 'ExtensionGlobalDB'
+const STORE_NAME = 'images'
+
+async function initDB() {
+  return openDB(DB_NAME, 1, {
+    upgrade(db) {
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME)
+      }
+    },
+  })
+}
+
+const fetchControllers = new Map<string, AbortController>()
+
+export class BackgroundCounter {
+  reserveInternshipDelivery = reserveDelivery
+  settleInternshipDelivery = settleDelivery
+  listInternshipDeliveries = listDeliveries
+  feishuFetch = feishuFetch
+  createTableBoss = createTableBoss
+  feishuUpsert = feishuUpsert
+
+  async openOptionsPage() {
+    await browser.runtime.openOptionsPage()
+    return true
+  }
+  async request(args: {
+    url: string
+    data: RequestInit
+    timeout: number
+    responseType: ResponseType
+  }) {
+    const signal = AbortSignal.timeout(args.timeout * 1000)
+
+    const res = await fetch(args.url, {
+      ...args.data,
+      signal,
+      // 跨域访问由扩展主机权限授权；no-cors 会过滤 Authorization 等请求头。
+      mode: args.data.mode ?? 'cors',
+      credentials: args.data.credentials ?? 'omit',
+    }).then(async (res) => {
+      console.log('request res', res)
+
+      if (!res.ok || res.status >= 400) {
+        const errorText = await res.text()
+        throw new Error(`状态码: ${res.status}: ${errorText}`)
+      }
+
+      const result = args.responseType === 'json' ? await res.json() : await res.text()
+
+      return result
+    })
+    return res
+  }
+
+  async notify(args: Browser.notifications.NotificationCreateOptions) {
+    await browser.notifications.create({
+      type: args.type,
+      iconUrl: args.iconUrl,
+      title: args.title,
+      message: args.message,
+    })
+    return true
+  }
+
+  async backgroundTest(type: 'success' | 'error') {
+    if (type === 'error') {
+      throw new Error(`background test error date: ${Date.now()}`)
+    }
+    return Date.now()
+  }
+
+  async fetch(...args: Parameters<typeof fetch>) {
+    return await fetch(...args)
+  }
+
+  async fetchStream(args: {
+    requestId: string
+    url: string
+    init: {
+      method?: string
+      headers?: Record<string, string>
+      body?: string
+      credentials?: RequestCredentials
+      mode?: RequestMode
+    }
+  }) {
+    const controller = new AbortController()
+    fetchControllers.set(args.requestId, controller)
+    try {
+      const res = await fetch(args.url, {
+        ...args.init,
+        // 兜底超时: 防止请求挂起导致调用方 Promise 永不 settle
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)]),
+      })
+      const body = await res.arrayBuffer()
+      return {
+        status: res.status,
+        statusText: res.statusText,
+        headers: Object.fromEntries(res.headers.entries()),
+        body: Array.from(new Uint8Array(body)),
+      }
+    } finally {
+      fetchControllers.delete(args.requestId)
+    }
+  }
+
+  async fetchStreamAbort(requestId: string) {
+    fetchControllers.get(requestId)?.abort()
+    return true
+  }
+  async getImage(key: string): Promise<
+    | { success: false }
+    | {
+        success: true
+        name: string
+        type: string
+        buffer: number[]
+      }
+  > {
+    const db = await initDB()
+    const file: File | undefined = await db.get(STORE_NAME, key)
+    if (!file) {
+      return { success: false }
+    }
+    const arrayBuffer = await file.arrayBuffer()
+    return {
+      success: true,
+      name: file.name,
+      type: file.type,
+      buffer: Array.from(new Uint8Array(arrayBuffer)),
+    }
+  }
+  async setImage(opt: {
+    name: string
+    type: string
+    buffer: number[]
+  }): Promise<{ success: boolean; key: string }> {
+    const db = await initDB()
+    const file = new File([new Uint8Array(opt.buffer).buffer], opt.name, {
+      type: opt.type,
+    })
+    const key = `img-${await calculateFileMD5(file)}`
+    await db.put(STORE_NAME, file, key)
+    return { success: true, key }
+  }
+}
+
+interface MessageMeta {
+  url: string
+  injector: 'content' | 'popup'
+}
+
+export class ProvideBackgroundAdapter implements Adapter<MessageMeta> {
+  sendMessage: SendMessage<MessageMeta> = async (message) => {
+    switch (message.meta.injector) {
+      case 'content': {
+        const tabs = await browser.tabs.query({ url: message.meta.url })
+        void tabs.map((tab) => browser.tabs.sendMessage(tab.id!, message))
+        break
+      }
+      case 'popup': {
+        await browser.runtime.sendMessage(message).catch((error) => {
+          if (error.message.includes('Receiving end does not exist')) {
+            return
+          }
+          throw error
+        })
+        break
+      }
+    }
+  }
+  onMessage: OnMessage<MessageMeta> = (callback) => {
+    const handler = (message?: Partial<Message<MessageMeta>>) => {
+      if (!message?.meta) {
+        return callback(message)
+      }
+      callback({
+        ...message,
+        meta: {
+          ...message.meta,
+          injector: message?.sender?.name as MessageMeta['injector'],
+        },
+      })
+    }
+    browser.runtime.onMessage.addListener(handler)
+    return () => browser.runtime.onMessage.removeListener(handler)
+  }
+}
+
+export class InjectBackgroundAdapter implements Adapter<MessageMeta> {
+  constructor(public name: MessageMeta['injector'] = 'content') {}
+  sendMessage: SendMessage<MessageMeta> = (message) => {
+    void browser.runtime.sendMessage(browser.runtime.id, {
+      ...message,
+      meta: { url: document.location.href, injector: this.name },
+    } satisfies Message<MessageMeta>)
+  }
+  onMessage: OnMessage<MessageMeta> = (callback) => {
+    const handler = (message?: Partial<Message<MessageMeta>>) => {
+      callback(message)
+    }
+    browser.runtime.onMessage.addListener(handler)
+    return () => browser.runtime.onMessage.removeListener(handler)
+  }
+}
