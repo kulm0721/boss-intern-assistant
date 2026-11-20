@@ -4,6 +4,7 @@ export interface InternshipConfig {
   minDailySalary: number | null
   maxDailySalary: number | null
   greeting: string
+  greetingMode?: 'platform' | 'custom'
   aiEnabled: boolean
   model: string
   notes: string
@@ -23,7 +24,7 @@ export interface InternshipJob {
 
 export const emptyInternshipConfig: InternshipConfig = {
   directions: '', cities: '', minDailySalary: null, maxDailySalary: null,
-  greeting: '', aiEnabled: true, model: '', notes: '',
+  greeting: '', greetingMode: 'platform', aiEnabled: true, model: '', notes: '',
 }
 
 export function splitKeywords(value: string): string[] {
@@ -34,7 +35,8 @@ export function validateInternshipConfig(config: InternshipConfig): string[] {
   const errors: string[] = []
   if (!splitKeywords(config.directions).length) errors.push('请填写至少一个岗位方向')
   if (!splitKeywords(config.cities).length) errors.push('请填写至少一个目标城市')
-  if (!config.greeting.trim()) errors.push('请填写固定打招呼语')
+  if (config.greetingMode !== undefined && !['platform', 'custom'].includes(config.greetingMode)) errors.push('请选择有效的打招呼方式')
+  if (config.greetingMode === 'custom' && !config.greeting.trim()) errors.push('请填写固定打招呼语')
   for (const value of [config.minDailySalary, config.maxDailySalary]) {
     if (value !== null && (!Number.isFinite(value) || value < 0)) {
       errors.push('日薪必须是非负数字，或留空表示不限')

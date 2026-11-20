@@ -32,6 +32,7 @@ export abstract class HelperContext<C extends HelperContext<C, T, S>, T, S> {
   cache: HelperCache
   jobCache: JobResultCache
   workflow: DeliveryWorkflow<C, T, S> | null = null
+  customGreetingConfirmed = ref(false)
   workflowRunning = computed(() => this.workflow?.status.value === 'running')
   jobResultMaps: Reactive<Map<string, TaskResult>>
 

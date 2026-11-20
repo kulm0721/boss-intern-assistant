@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useConf } from '@/composables/conf'
 import { useHelper } from '@/composables/useHelper'
 import { useModel } from '@/composables/useModel'
@@ -14,11 +14,17 @@ const form = computed(() => conf.formData.internship)
 const running = computed(() => helper.workflow?.busy.value ?? false)
 const saving = ref(false)
 const message = ref('')
+const customGreetingConfirmed = ref(false)
+const greetingMode = computed({
+  get: () => form.value.greetingMode ?? 'platform',
+  set: (value: 'platform' | 'custom') => { form.value.greetingMode = value },
+})
+watch([greetingMode, () => helper.uid], () => { customGreetingConfirmed.value = false })
 const records = ref<DeliveryRecord[]>([])
 const results = computed(() => [...helper.jobResultMaps.values()])
 const skipped = computed(() => results.value.filter((item) => item.status === 'warn').length)
 const stages: Record<string, string> = {
-  reserved: '待核对：已预留', contacted: '已建立沟通', sent: '话术已发送',
+  reserved: '待核对：已预留', contacted: '已建立沟通（固定话术未发送）', sent: '固定话术已发送',
   uncertain: '发送结果待核对', cancelled: '发送前已停止',
 }
 
@@ -41,18 +47,29 @@ async function save() {
 async function start() {
   const errors = [...validateInternshipConfig(form.value), ...validateRunLimits(conf.formData.deliveryLimit.value, conf.formData.delayDeliveryInterval)]
   if (errors.length) { message.value = errors.join('；'); return }
+  if (greetingMode.value === 'custom' && !customGreetingConfirmed.value) {
+    message.value = '请先在 BOSS 关闭自动打招呼，并勾选本轮确认，避免平台招呼和固定话术连续发送。'
+    return
+  }
   if (!helper.jobList.value.length) { message.value = '当前还没有岗位，请先使用 BOSS 搜索实习岗位。'; return }
   saving.value = true
   try { await conf.confSaving({ silent: true }) }
   catch (error) { message.value = `保存失败，未启动：${String(error)}`; return }
   finally { saving.value = false }
-  message.value = '正在筛选，通过后会自动发送你填写的固定话术。'
+  helper.customGreetingConfirmed.value = customGreetingConfirmed.value
+  message.value = greetingMode.value === 'custom'
+    ? '正在筛选，通过后会建立沟通并发送固定话术。'
+    : '正在筛选，通过后只建立沟通，插件不追加话术。'
   try {
     await helper.start('auto')
     message.value = helper.workflow?.errorMessage.value
       ? `已暂停：${helper.workflow.errorMessage.value}。请先核对记录，再重新启动。`
       : '本轮已停止或完成，可查看下方投递记录和岗位处理结果。'
   } catch (error) { message.value = `启动失败：${String(error)}` }
+  finally {
+    helper.customGreetingConfirmed.value = false
+    customGreetingConfirmed.value = false
+  }
   await refreshHistory()
 }
 async function search() {
@@ -78,12 +95,12 @@ onMounted(refreshHistory)
   <section class="intern-panel">
     <header class="intro">
       <div><span class="eyebrow">BOSS INTERN ASSISTANT</span><h2>把时间留给面试。</h2>
-        <p>只筛实习岗位，自动发送你的固定打招呼语。</p></div>
+        <p>只筛实习岗位，按你选择的方式建立沟通。</p></div>
       <span class="state" :class="{ active: running }">{{ running ? '正在处理岗位' : '等待启动' }}</span>
     </header>
     <div class="metrics">
       <div><strong>{{ helper.jobList.value.length }}</strong><span>当前候选岗位</span></div>
-      <div><strong>{{ helper.statistics.todayData.value.success }}</strong><span>今日话术发送成功</span></div>
+      <div><strong>{{ helper.statistics.todayData.value.success }}</strong><span>今日完成联系</span></div>
       <div><strong>{{ skipped }}</strong><span>本页已跳过</span></div>
     </div>
     <fieldset :disabled="running || saving" class="settings">
@@ -94,10 +111,19 @@ onMounted(refreshHistory)
         <label>最高日薪 · 元/天 <input type="number" min="0" :value="form.maxDailySalary ?? ''" @input="setSalary('maxDailySalary', $event)" placeholder="留空不限" /><small>设置后，岗位公布的日薪上限也须符合。</small></label>
       </div>
       <p class="hint">填写日薪要求后，月薪、时薪、面议或无法解析的薪资会跳过，不自动换算。</p>
-      <label class="greeting">你的固定打招呼语 <textarea v-model="form.greeting" rows="4" placeholder="粘贴你已经写好的打招呼语，系统将原样发送。" /><small>AI 只判断岗位匹配度；话术不改写、不代聊。</small></label>
+      <label>打招呼方式 <select v-model="greetingMode" data-testid="greeting-mode">
+        <option value="platform">只使用 BOSS 自带招呼（插件不追加消息）</option>
+        <option value="custom">发送固定话术（须先关闭 BOSS 自动打招呼）</option>
+      </select></label>
+      <p class="hint">建立沟通时 BOSS 可能自动发送招呼。插件无法读取或关闭该开关，请在 <a href="https://www.zhipin.com/web/geek/notify-set?type=greetSet" target="_blank" rel="noopener noreferrer">BOSS 打招呼设置</a> 中核对。只使用 BOSS 模式不会发送下方保存的固定话术；平台是否发送请查看聊天记录。</p>
+      <template v-if="greetingMode === 'custom'">
+        <label class="greeting">你的固定打招呼语 <textarea v-model="form.greeting" rows="4" placeholder="粘贴你已经写好的打招呼语，系统将原样发送。" /><small>AI 只判断岗位匹配度；话术不改写、不代聊。</small></label>
+        <label class="check"><input type="checkbox" v-model="customGreetingConfirmed" data-testid="greeting-confirmation" />我已在当前 BOSS 账号关闭自动打招呼，本轮只由插件发送固定话术</label>
+        <p class="hint">此确认仅本轮有效。若平台设置未关闭，仍可能收到两条招呼；修改后请先少量核对。</p>
+      </template>
       <details class="ai" open>
         <summary>AI 辅助匹配</summary>
-        <label class="check"><input type="checkbox" v-model="form.aiEnabled" />启用 AI，在规则通过后再核对岗位描述</label>
+        <label class="check"><input type="checkbox" v-model="form.aiEnabled" data-testid="ai-enabled" />启用 AI，在规则通过后再核对岗位描述</label>
         <div v-if="form.aiEnabled" class="grid">
           <label>匹配模型 <select v-model="form.model"><option value="">请选择已配置的模型</option><option v-for="model in models.modelData.value" :key="model.key" :value="model.key">{{ model.name }}</option></select><button type="button" class="link" @click="counter.openOptionsPage()">配置模型与 API 密钥</button></label>
           <label>补充匹配要求（可选）<textarea v-model="form.notes" rows="2" placeholder="填写岗位方向之外需要 AI 核对的偏好" /></label>

@@ -14,6 +14,8 @@ export interface DeliveryRecord {
 }
 
 export interface DeliveryActions {
+  // Per-run acknowledgement, never persisted with model or internship settings.
+  customGreetingConfirmed?: boolean
   isStopped(): boolean
   matchWithAI(): Promise<{ matches: boolean; reason: string }>
   reserve(): Promise<boolean>
@@ -28,6 +30,10 @@ export async function executeInternshipDelivery(
 ): Promise<{ sent: boolean; reason: string }> {
   const errors = validateInternshipConfig(config)
   if (errors.length) throw new Error(errors.join('；'))
+  const customGreeting = config.greetingMode === 'custom'
+  if (customGreeting && actions.customGreetingConfirmed !== true) {
+    throw new Error('请先在 BOSS 关闭自动打招呼，再确认本轮使用固定话术，避免连续发送两条消息')
+  }
   const rules = evaluateInternshipRules(job, config)
   if (!rules.matches) return { sent: false, reason: rules.reason }
   if (actions.isStopped()) return { sent: false, reason: '已停止' }
@@ -47,6 +53,10 @@ export async function executeInternshipDelivery(
   try {
     await actions.publish()
     await actions.settle('contacted')
+    if (!customGreeting) {
+      // Establishing contact can send BOSS's own greeting. Do not append another message.
+      return { sent: true, reason: '已建立沟通，插件未追加话术；BOSS 自带招呼请在聊天中核对' }
+    }
     if (actions.isStopped()) throw new Error('已建立沟通后停止，固定话术尚未发送，请手动核对')
     await actions.greet(config.greeting)
     await actions.settle('sent')

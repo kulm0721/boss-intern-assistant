@@ -23,13 +23,14 @@ async function main() {
     const statistics = { todayData: ref({ success: 0 }) }
     const jobResultMaps = reactive(new Map())
     const helper = {
-      uid: 'offline-demo', jobList: ref(jobs), statistics, jobResultMaps, workflow,
+      uid: 'offline-demo', jobList: ref(jobs), statistics, jobResultMaps, workflow, customGreetingConfirmed: ref(false),
       stop() { workflow.status.value = 'stop' },
       async start() {
         workflow.busy.value = true; workflow.status.value = 'running'; workflow.errorMessage.value = null
         try {
           for (const job of jobs) {
             const result = await executeInternshipDelivery(job, structuredClone(toRaw(conf.formData.internship)), {
+              customGreetingConfirmed: helper.customGreetingConfirmed.value,
               isStopped: () => workflow.status.value !== 'running',
               matchWithAI: async () => { throw new Error('离线演示不调用 AI，请关闭 AI 后体验规则筛选') },
               reserve: () => counter.reserveInternshipDelivery({ account: 'offline-demo', jobKey: job.key, hrId: job.key, jobName: job.jobName, company: '离线示例公司', link: '', stage: 'reserved', updatedAt: Date.now() }, conf.formData.deliveryLimit.value),

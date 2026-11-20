@@ -1,7 +1,7 @@
 {
   "name": "boss-intern-assistant",
   "displayName": "实习海投助手",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "基于 boss-helper 的 BOSS 实习岗位筛选与固定招呼插件",
   "type": "module",

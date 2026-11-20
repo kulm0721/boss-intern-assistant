@@ -6,12 +6,37 @@ import { executeInternshipDelivery } from '../src/internship/delivery.ts'
 import { reserveDelivery, settleDelivery, listDeliveries } from '../src/internship/history.ts'
 import { validateRunLimits } from '../src/internship/policy.ts'
 
-const config = { directions: 'Java,后端', cities: '上海市,杭州', minDailySalary: 150, maxDailySalary: null, greeting: '用户自己的话术 {{ 保留原样 }}', aiEnabled: true, model: 'test-model', notes: '' }
+const config = { directions: 'Java,后端', cities: '上海市,杭州', minDailySalary: 150, maxDailySalary: null, greeting: '用户自己的话术 {{ 保留原样 }}', greetingMode: 'custom', aiEnabled: true, model: 'test-model', notes: '' }
 const job = { key: 'job-1', jobName: 'Java 后端实习生', jobDescription: '参与后端服务开发', salary: '150-250元/天', city: '上海', address: '上海市徐汇区', jobLabels: [] }
 function actions(overrides = {}) {
   const calls = []
-  return { calls, isStopped: () => false, matchWithAI: async () => ({ matches: true, reason: '匹配后端实习' }), reserve: async () => { calls.push('reserve'); return true }, publish: async () => { calls.push('publish') }, greet: async (text) => { calls.push(['greet', text]) }, settle: async (stage) => { calls.push(stage) }, ...overrides }
+  return { calls, customGreetingConfirmed: true, isStopped: () => false, matchWithAI: async () => ({ matches: true, reason: '匹配后端实习' }), reserve: async () => { calls.push('reserve'); return true }, publish: async () => { calls.push('publish') }, greet: async (text) => { calls.push(['greet', text]) }, settle: async (stage) => { calls.push(stage) }, ...overrides }
 }
+
+test('平台模式和旧配置只建立沟通，不叠加固定话术或冒充消息发送成功', async () => {
+  for (const greetingMode of ['platform', undefined]) {
+    const a = actions({ customGreetingConfirmed: false })
+    const result = await executeInternshipDelivery(job, { ...config, greetingMode, greeting: '' }, a)
+    assert.equal(result.sent, true)
+    assert.match(result.reason, /插件未追加话术/)
+    assert.deepEqual(a.calls, ['reserve', 'publish', 'contacted'])
+  }
+})
+
+test('固定话术未确认关闭平台招呼时，在任何外部动作前阻止运行', async () => {
+  for (const customGreetingConfirmed of [undefined, false, 'true']) {
+    const a = actions({ customGreetingConfirmed })
+    await assert.rejects(executeInternshipDelivery(job, config, a), /关闭自动打招呼/)
+    assert.deepEqual(a.calls, [])
+  }
+  assert.ok(validateInternshipConfig({ ...config, greetingMode: 'invalid' }).length)
+})
+
+test('平台建立沟通请求失败时不尝试补发话术，保留待核对记录', async () => {
+  const a = actions({ publish: async () => { throw new Error('publish failed') } })
+  await assert.rejects(executeInternshipDelivery(job, { ...config, greetingMode: 'platform' }, a), /publish failed/)
+  assert.deepEqual(a.calls, ['reserve', 'uncertain'])
+})
 
 test('明确实习、岗位方向、精确城市与日薪下限一起判断', () => {
   assert.equal(evaluateInternshipRules(job, config).matches, true)

@@ -43,6 +43,7 @@ export const bossWorkflow = defineTaskWorkflow<BossHelperCtx, BoosJobData>(
     return async (ctx, data) => {
       const account = ctx.helper.uid
       const result = await executeInternshipDelivery(data.jobData, config, {
+        customGreetingConfirmed: ctx.helper.customGreetingConfirmed.value,
         isStopped: () => ctx.helper.workflow?.status.value !== 'running' || ctx.helper.uid !== account,
         matchWithAI: async () => {
           const agent = ctx.helper.chatModel.agents.get('filtering')
